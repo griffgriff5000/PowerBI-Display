@@ -121,20 +121,23 @@ class ImageCycleApp(Tk):
 
         self.display_tree = ttk.Treeview(
             assignment_body,
-            columns=("display", "image"),
+            columns=("display", "source_type", "source_value"),
             show="headings",
             height=8,
             selectmode="browse",
         )
         self.display_tree.heading("display", text="Display")
-        self.display_tree.heading("image", text="Assigned Image")
+        self.display_tree.heading("source_type", text="Type")
+        self.display_tree.heading("source_value", text="Assigned Source")
         self.display_tree.column("display", width=220, anchor="w")
-        self.display_tree.column("image", width=560, anchor="w")
+        self.display_tree.column("source_type", width=90, anchor="w")
+        self.display_tree.column("source_value", width=470, anchor="w")
         self.display_tree.grid(row=0, column=0, sticky="nsew")
 
         per_controls = ttk.Frame(assignment_body)
         per_controls.grid(row=0, column=1, sticky="ns", padx=(10, 0))
         ttk.Button(per_controls, text="Assign Image", command=self._assign_image_to_selected_display).pack(fill=X, pady=(0, 6))
+        ttk.Button(per_controls, text="Assign Power BI", command=self._assign_powerbi_to_selected_display).pack(fill=X, pady=(0, 6))
         ttk.Button(per_controls, text="Use Selected Playlist Image", command=self._assign_selected_playlist_image).pack(fill=X, pady=(0, 6))
         ttk.Button(per_controls, text="Clear Assignment", command=self._clear_selected_assignment).pack(fill=X)
 
@@ -162,10 +165,11 @@ class ImageCycleApp(Tk):
         for item_id in self.display_tree.get_children():
             self.display_tree.delete(item_id)
         for mon in self.monitors:
-            assigned = self.display_assignments.get(mon.id)
-            image_text = str(assigned) if assigned else "(not assigned)"
+            assigned = self.display_assignments.get(mon.id, {"type": "none", "value": ""})
+            source_type = assigned.get("type", "none")
+            source_value = assigned.get("value", "") or "(not assigned)"
             display_text = f"{mon.id} ({mon.width}x{mon.height} @ {mon.x},{mon.y})"
-            self.display_tree.insert("", END, iid=mon.id, values=(display_text, image_text))
+            self.display_tree.insert("", END, iid=mon.id, values=(display_text, source_type, source_value))
 
     def _selected_tree_monitor_id(self) -> str | None:
         selected = self.display_tree.selection()
@@ -188,9 +192,46 @@ class ImageCycleApp(Tk):
         if not path:
             return
         resolved = Path(path).resolve()
-        self.display_assignments[mon_id] = resolved
+        self.display_assignments[mon_id] = {"type": "image", "value": str(resolved)}
         self._refresh_display_tree()
         self.status_var.set(f"Assigned image to {mon_id}: {resolved.name}")
+
+    def _assign_powerbi_to_selected_display(self):
+        mon_id = self._selected_tree_monitor_id()
+        if not mon_id:
+            return
+        raw = simpledialog.askstring(
+            "Assign Power BI",
+            "Paste Power BI report URL or iframe HTML:",
+            parent=self,
+        )
+        if raw is None:
+            return
+        url = self._extract_powerbi_url(raw)
+        if not url:
+            messagebox.showwarning(
+                "Invalid Power BI input",
+                "Could not find a valid Power BI embed URL. Paste a reportEmbed URL or iframe HTML.",
+            )
+            return
+        self.display_assignments[mon_id] = {"type": "powerbi", "value": url}
+        self._refresh_display_tree()
+        self.status_var.set(f"Assigned Power BI to {mon_id}.")
+
+    def _extract_powerbi_url(self, raw_value: str) -> str | None:
+        raw = raw_value.strip()
+        if not raw:
+            return None
+        if "<iframe" in raw.lower():
+            match = re.search(r"src\s*=\s*['\"]([^'\"]+)['\"]", raw, flags=re.IGNORECASE)
+            if not match:
+                return None
+            raw = html.unescape(match.group(1).strip())
+        if not raw.lower().startswith("http"):
+            return None
+        if "app.powerbi.com/" not in raw.lower():
+            return None
+        return raw
 
     def _assign_selected_playlist_image(self):
         mon_id = self._selected_tree_monitor_id()
@@ -203,7 +244,7 @@ class ImageCycleApp(Tk):
         idx = selected[0]
         if idx >= len(self.image_paths):
             return
-        self.display_assignments[mon_id] = self.image_paths[idx]
+        self.display_assignments[mon_id] = {"type": "image", "value": str(self.image_paths[idx])}
         self._refresh_display_tree()
         self.status_var.set(f"Assigned playlist image to {mon_id}: {self.image_paths[idx].name}")
 
@@ -211,9 +252,9 @@ class ImageCycleApp(Tk):
         mon_id = self._selected_tree_monitor_id()
         if not mon_id:
             return
-        self.display_assignments[mon_id] = None
+        self.display_assignments[mon_id] = {"type": "none", "value": ""}
         self._refresh_display_tree()
-        self.status_var.set(f"Cleared image assignment for {mon_id}.")
+        self.status_var.set(f"Cleared assignment for {mon_id}.")
 
     def _monitor_summary(self) -> str:
         if not self.monitors:
