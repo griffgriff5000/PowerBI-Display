@@ -8,7 +8,7 @@ What It Does
 - Detects all monitors.
 - Opens one fullscreen image window on each monitor.
 - Keeps display output windows fullscreen during playback.
-- Lists each display so you can assign one image to each monitor.
+- Lists each display so you can assign either an image or a Power BI embed source.
 - Lets you add individual files or a whole folder to the main image list for quick selection.
 
 Requirements
@@ -36,6 +36,7 @@ Usage
 2. In `Display Image Assignment`, click a display row.
 3. Assign an image:
    - `Assign Image` picks a file directly.
+   - `Assign Power BI` accepts either a `reportEmbed` URL or full iframe HTML.
    - `Use Selected Playlist Image` uses the selected item from the main playlist.
 4. Assign images only to the displays you want to use. Unassigned displays stay blank.
 5. Click `Set Password` and define the exit password.
@@ -47,3 +48,5 @@ Notes
 -----
 - On Windows, monitor detection works without extra system setup.
 - `screeninfo` is included to improve cross-platform monitor detection.
+- Power BI assignments launch in Edge/Chrome app windows positioned fullscreen on the assigned monitor.
+- Private Power BI reports may still require a signed-in browser session unless you use a public embed model.

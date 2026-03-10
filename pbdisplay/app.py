@@ -323,11 +323,16 @@ class ImageCycleApp(Tk):
         if not self.monitors:
             messagebox.showerror("No monitors", "No displays were detected.")
             return
-        assigned_count = sum(1 for mon in self.monitors if self.display_assignments.get(mon.id))
+        assigned_count = sum(
+            1
+            for mon in self.monitors
+            if self.display_assignments.get(mon.id, {}).get("type") in {"image", "powerbi"}
+        )
         if assigned_count == 0:
-            messagebox.showwarning("No assignments", "Assign at least one image to start playback.")
+            messagebox.showwarning("No assignments", "Assign at least one image or Power BI source to start playback.")
             return
         self._open_display_windows()
+        self._open_powerbi_windows()
         self._running = True
         self.status_var.set(
             f"Running on {len(self.monitors)} display(s): {assigned_count} assigned, {len(self.monitors) - assigned_count} blank."
@@ -337,6 +342,7 @@ class ImageCycleApp(Tk):
     def stop(self):
         self._running = False
         self._remove_global_input_hooks()
+        self._stop_powerbi_windows()
         if self._cycle_job is not None:
             self.after_cancel(self._cycle_job)
             self._cycle_job = None
@@ -362,6 +368,9 @@ class ImageCycleApp(Tk):
         self.stop()
         self._running = True
         for mon in self.monitors:
+            assignment = self.display_assignments.get(mon.id, {"type": "none", "value": ""})
+            if assignment.get("type") == "powerbi":
+                continue
             win = Toplevel(self)
             win.overrideredirect(True)
             win.attributes("-topmost", True)
@@ -380,6 +389,64 @@ class ImageCycleApp(Tk):
             except Exception:
                 pass
         self._install_global_input_hooks()
+
+    def _open_powerbi_windows(self):
+        for mon in self.monitors:
+            assignment = self.display_assignments.get(mon.id, {"type": "none", "value": ""})
+            if assignment.get("type") != "powerbi":
+                continue
+            url = assignment.get("value", "").strip()
+            if not url:
+                continue
+            proc = self._launch_browser_on_monitor(url, mon)
+            if proc is not None:
+                self._browser_processes[mon.id] = proc
+
+    def _stop_powerbi_windows(self):
+        for mon_id, proc in list(self._browser_processes.items()):
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+            except Exception:
+                pass
+            self._browser_processes.pop(mon_id, None)
+
+    def _launch_browser_on_monitor(self, url: str, mon: Monitor) -> subprocess.Popen | None:
+        browser = self._find_browser_executable()
+        if not browser:
+            self.status_var.set("No supported browser found (Edge/Chrome) for Power BI display.")
+            return None
+        args = [
+            browser,
+            "--new-window",
+            f"--window-position={mon.x},{mon.y}",
+            f"--window-size={max(1, mon.width)},{max(1, mon.height)}",
+            "--start-fullscreen",
+            f"--app={url}",
+        ]
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        try:
+            return subprocess.Popen(args, creationflags=creationflags)
+        except Exception as exc:
+            self.status_var.set(f"Failed to launch browser for {mon.id}: {exc}")
+            return None
+
+    def _find_browser_executable(self) -> str | None:
+        candidates = [
+            shutil.which("msedge"),
+            shutil.which("chrome"),
+            shutil.which("google-chrome"),
+            r"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+            r"C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+            r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+            r"C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        ]
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return candidate
+        return None
 
     def _install_global_input_hooks(self):
         if not IS_WINDOWS:
@@ -547,14 +614,18 @@ class ImageCycleApp(Tk):
         shown: list[str] = []
         blank = 0
         for mon in self.monitors:
-            path = self.display_assignments.get(mon.id)
-            if path is None:
+            assignment = self.display_assignments.get(mon.id, {"type": "none", "value": ""})
+            if assignment.get("type") == "powerbi":
+                shown.append(f"{mon.id}: Power BI")
+                continue
+            if assignment.get("type") != "image":
                 label = self._labels.get(mon.id)
                 if label is not None:
                     label.configure(image="", text="")
                 self._photo_refs.pop(mon.id, None)
                 blank += 1
                 continue
+            path = Path(assignment.get("value", ""))
             try:
                 photo = self._render_for_monitor(path, mon)
             except (FileNotFoundError, UnidentifiedImageError, OSError) as exc:
