@@ -6,9 +6,11 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from tkinter import (
     BOTH,
+    BooleanVar,
     END,
     LEFT,
     RIGHT,
@@ -27,7 +29,11 @@ from tkinter import ttk
 
 from PIL import Image, ImageOps, ImageTk, UnidentifiedImageError
 
-from .display_manager import Monitor, enumerate_monitors
+try:
+    from .display_manager import Monitor, enumerate_monitors
+except ImportError:
+    # Allows direct script execution: python pbdisplay/app.py
+    from display_manager import Monitor, enumerate_monitors
 
 APP_TITLE = "Multi-Display Image Cycle"
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
@@ -70,6 +76,7 @@ class ImageCycleApp(Tk):
         self.display_assignments: dict[str, dict[str, str]] = {m.id: {"type": "none", "value": ""} for m in self.monitors}
         self.status_var = StringVar(value="Idle")
         self.password_state_var = StringVar(value="Password not set")
+        self.prompt_powerbi_login_var = BooleanVar(value=True)
 
         self._windows: dict[str, Toplevel] = {}
         self._labels: dict[str, ttk.Label] = {}
@@ -77,6 +84,7 @@ class ImageCycleApp(Tk):
         self._cycle_job: str | None = None
         self._running = False
         self._browser_processes: dict[str, subprocess.Popen] = {}
+        self._temp_browser_profiles: list[Path] = []
         self._unlock_password: str | None = None
         self._auth_prompt_active = False
         self._keyboard_hook = None
@@ -147,6 +155,11 @@ class ImageCycleApp(Tk):
 
         ttk.Button(options, text="Set Password", command=self._set_password).grid(row=0, column=0, sticky="w")
         ttk.Label(options, textvariable=self.password_state_var).grid(row=0, column=1, sticky="w", padx=(10, 0))
+        ttk.Checkbutton(
+            options,
+            text="Prompt Power BI sign-in (isolated browser session)",
+            variable=self.prompt_powerbi_login_var,
+        ).grid(row=0, column=2, sticky="w", padx=(14, 0))
 
         monitor_text = self._monitor_summary()
         ttk.Label(options, text=monitor_text).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
@@ -410,28 +423,57 @@ class ImageCycleApp(Tk):
             except Exception:
                 pass
             self._browser_processes.pop(mon_id, None)
+        self._cleanup_temp_browser_profiles()
 
     def _launch_browser_on_monitor(self, url: str, mon: Monitor) -> subprocess.Popen | None:
         browser = self._find_browser_executable()
         if not browser:
             self.status_var.set("No supported browser found (Edge/Chrome) for Power BI display.")
             return None
+        browser_name = Path(browser).name.lower()
+        profile_dir: Path | None = None
         args = [
             browser,
             "--new-window",
             f"--window-position={mon.x},{mon.y}",
             f"--window-size={max(1, mon.width)},{max(1, mon.height)}",
             "--start-fullscreen",
-            f"--app={url}",
         ]
+        if self.prompt_powerbi_login_var.get():
+            profile_dir = Path(tempfile.mkdtemp(prefix="pbdisplay-browser-"))
+            self._temp_browser_profiles.append(profile_dir)
+            args.append(f"--user-data-dir={profile_dir}")
+            if "edge" in browser_name:
+                args.append("--inprivate")
+            else:
+                args.append("--incognito")
+        args.append(f"--app={url}")
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
         try:
             return subprocess.Popen(args, creationflags=creationflags)
         except Exception as exc:
+            if profile_dir is not None:
+                try:
+                    shutil.rmtree(profile_dir, ignore_errors=True)
+                except Exception:
+                    pass
+                if profile_dir in self._temp_browser_profiles:
+                    self._temp_browser_profiles.remove(profile_dir)
             self.status_var.set(f"Failed to launch browser for {mon.id}: {exc}")
             return None
+
+    def _cleanup_temp_browser_profiles(self):
+        for profile_dir in list(self._temp_browser_profiles):
+            try:
+                shutil.rmtree(profile_dir, ignore_errors=True)
+            except Exception:
+                pass
+            try:
+                self._temp_browser_profiles.remove(profile_dir)
+            except ValueError:
+                pass
 
     def _find_browser_executable(self) -> str | None:
         candidates = [
